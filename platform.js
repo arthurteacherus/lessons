@@ -1,41 +1,3 @@
-// MD5 для версии на планшете (в браузере нет встроенного md5, а Яндекс.Диск сообщает именно md5 файла).
-// Принимает Uint8Array, возвращает hex-строку.
-function lcMd5Hex(bytes) {
-  const add = (x, y) => (x + y) | 0;
-  const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-  const K = [];
-  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
-  const len = bytes.length;
-  const nBlocks = ((len + 8) >> 6) + 1;
-  const total = nBlocks * 64;
-  const buf = new Uint8Array(total);
-  buf.set(bytes);
-  buf[len] = 0x80;
-  const dv = new DataView(buf.buffer);
-  dv.setUint32(total - 8, (len << 3) >>> 0, true);
-  dv.setUint32(total - 4, Math.floor(len / 536870912), true);
-  let a0 = 0x67452301, b0 = 0xefcdab89 | 0, c0 = 0x98badcfe | 0, d0 = 0x10325476;
-  const M = new Int32Array(16);
-  for (let blk = 0; blk < nBlocks; blk++) {
-    for (let i = 0; i < 16; i++) M[i] = dv.getInt32(blk * 64 + i * 4, true);
-    let A = a0, B = b0, C = c0, D = d0;
-    for (let i = 0; i < 64; i++) {
-      let F, g;
-      if (i < 16) { F = (B & C) | (~B & D); g = i; }
-      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
-      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
-      else { F = C ^ (B | ~D); g = (7 * i) % 16; }
-      F = add(add(add(F, A), K[i]), M[g]);
-      A = D; D = C; C = B;
-      const s = S[(i >> 4) * 4 + (i & 3)];
-      B = add(B, (F << s) | (F >>> (32 - s)));
-    }
-    a0 = add(a0, A); b0 = add(b0, B); c0 = add(c0, C); d0 = add(d0, D);
-  }
-  return [a0, b0, c0, d0].map((v) => [0, 8, 16, 24].map((sh) => ((v >>> sh) & 255).toString(16).padStart(2, "0")).join("")).join("");
-}
-if (typeof module !== "undefined") module.exports = { lcMd5Hex };
-
 // ============================================================
 // Версия для планшета (браузер/PWA): вместо Electron-моста window.lcAPI — реализация на
 // IndexedDB + fetch. Программа (app.js) та же, что на ноутбуке; отличается только этот слой.
@@ -52,7 +14,12 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
   const PROJECT_PATH = "Планшет/Мои уроки.json";
   window.lcDefaultProjectPath = PROJECT_PATH;
   const YD_API = "https://cloud-api.yandex.net/v1/disk";
-  const YD_REMOTE = "app:/lessons.json";
+  // Файл на Диске — JS-обёртка вокруг JSON (lessons.js): Яндекс не даёт браузеру прочитать содержимое
+  // файла запросом (CORS), но разрешает подключить его как скрипт — так проект и скачивается.
+  const YD_REMOTE = "app:/lessons.js";
+  const WRAP_PREFIX = "window.__lcPull(";
+  const WRAP_SUFFIX = ");\n";
+  const wrap = (jsonText) => WRAP_PREFIX + jsonText + WRAP_SUFFIX;
   const REDIRECT = location.origin + location.pathname.replace(/index\.html$/, "");
   window.lcRedirectUri = REDIRECT;
 
@@ -276,24 +243,48 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
     if (r.status >= 400) throw new Error(r.body.message || "Яндекс.Диск вернул ошибку " + r.status);
     return r.body;
   }
+  // Скачивание: подключаем файл с Диска как <script> (без CORS); обёртка передаёт проект в window.__lcPull.
+  function loadScriptPayload(href) {
+    return new Promise((resolve, reject) => {
+      let got = null;
+      const s = document.createElement("script");
+      const cleanup = () => {
+        clearTimeout(timer);
+        delete window.__lcPull;
+        s.remove();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Яндекс.Диск слишком долго отдаёт файл (больше 3 минут)"));
+      }, 180000);
+      window.__lcPull = (obj) => {
+        got = obj;
+      };
+      s.onload = () => {
+        const obj = got;
+        cleanup();
+        if (obj == null) reject(new Error("Файл на Диске имеет неожиданный формат"));
+        else resolve(JSON.stringify(obj));
+      };
+      s.onerror = () => {
+        cleanup();
+        reject(new Error("Не удалось скачать файл проекта с Яндекс.Диска (сервер скачивания не отдал его браузеру)"));
+      };
+      s.src = href;
+      document.head.appendChild(s);
+    });
+  }
   async function ydDownloadText() {
     const r = await ydJson("GET", `/resources/download?${ydPathQ()}`);
     if (r.status >= 400) throw new Error(r.body.message || "Не удалось скачать файл (" + r.status + ")");
-    let res;
-    try {
-      res = await fetch(r.body.href);
-    } catch (e) {
-      throw new Error("Браузер не смог скачать файл с Яндекс.Диска (" + errMsg(e) + "). Возможно, сервер скачивания не разрешает запросы из браузера.");
-    }
-    if (!res.ok) throw new Error("Не удалось скачать файл (" + res.status + ")");
-    return stripBom(await res.text());
+    return loadScriptPayload(r.body.href);
   }
   async function ydUploadText(text) {
     const r = await ydJson("GET", `/resources/upload?${ydPathQ()}&overwrite=true`);
     if (r.status >= 400) throw new Error(r.body.message || "Не удалось начать загрузку (" + r.status + ")");
     let res;
     try {
-      res = await fetch(r.body.href, { method: "PUT", body: new Blob([text], { type: "application/json" }) });
+      res = await fetch(r.body.href, { method: "PUT", body: new Blob([wrap(text)]) });
     } catch (e) {
       throw new Error("Браузер не смог загрузить файл на Яндекс.Диск (" + errMsg(e) + "). Возможно, сервер загрузки не разрешает запросы из браузера.");
     }
@@ -311,7 +302,13 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
   // loopback "Failed to fetch" без пояснения бесполезен — подсказываем про сеть
   const netHint = (e) => (e instanceof TypeError ? new Error("Нет связи с Яндекс.Диском (проверьте интернет): " + errMsg(e)) : e);
 
+  // Имя файла на Диске поменялось (lessons.json → lessons.js): старые отпечатки больше не годятся.
+  async function ensureRemoteName() {
+    if (syncSt.remoteName !== YD_REMOTE) await saveSync({ remoteName: YD_REMOTE, lastRemoteMd5: null, lastLocalHash: null });
+  }
+
   async function pushText(localText, force) {
+    await ensureRemoteName();
     let parsed;
     try {
       parsed = JSON.parse(localText);
@@ -328,7 +325,7 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       return { ok: false, error: "Загрузка отменена: проект пустой, а на Диске уже есть данные" };
     }
     await ydUploadText(localText);
-    const localMd5 = md5Of(localText);
+    const localMd5 = md5Of(wrap(localText));
     let md5 = localMd5;
     for (let i = 0; i < 5; i++) {
       const m = await ydMeta().catch(() => null);
@@ -378,11 +375,12 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
     syncPull: async () => {
       await ready;
       try {
+        await ensureRemoteName();
         const meta = await ydMeta();
         if (!meta) return { ok: true, status: "missing" };
         if (meta.md5 && meta.md5 === syncSt.lastRemoteMd5) return { ok: true, status: "nochange" };
         const text = await ydDownloadText();
-        return { ok: true, status: "remote-newer", text, md5: meta.md5 || md5Of(text), modified: meta.modified };
+        return { ok: true, status: "remote-newer", text, md5: meta.md5 || md5Of(wrap(text)), modified: meta.modified };
       } catch (e) {
         return syncErr(netHint(e));
       }
@@ -390,7 +388,7 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
     syncIsLocalChanged: async (localText, remoteMd5) => {
       await ready;
       if (syncSt.lastLocalHash && (await sha256Of(localText)) === syncSt.lastLocalHash) return false;
-      if (remoteMd5 && md5Of(localText) === remoteMd5) return false;
+      if (remoteMd5 && md5Of(wrap(localText)) === remoteMd5) return false;
       return true;
     },
     syncMarkSynced: async (remoteMd5, localText) => {
@@ -413,7 +411,7 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
           await saveConflictCopy(localText, "local-before-remote");
           const meta = await ydMeta();
           const text = await ydDownloadText();
-          return { ok: true, text, md5: (meta && meta.md5) || md5Of(text) };
+          return { ok: true, text, md5: (meta && meta.md5) || md5Of(wrap(text)) };
         }
         const meta = await ydMeta();
         if (meta) {
