@@ -7965,6 +7965,7 @@ function SyncModal({
 }) {
   const [clientId, setClientId] = useState(info.clientId || "");
   const [manualToken, setManualToken] = useState("");
+  const [proxy, setProxy] = useState(info.proxyUrl || "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const connect = async () => {
@@ -8061,7 +8062,7 @@ function SyncModal({
       fontSize: 12,
       color: "#7a8a9c"
     }
-  }, "\u0424\u0430\u0439\u043B \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u043B\u0435\u0436\u0438\u0442 \u043D\u0430 \u0414\u0438\u0441\u043A\u0435 \u0432 \u043F\u0430\u043F\u043A\u0435 \xAB\u041F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F\xBB \u2192 \u043F\u0430\u043F\u043A\u0430 \u0432\u0430\u0448\u0435\u0433\u043E \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F, \u0444\u0430\u0439\u043B lessons.json. \u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u044E\u0442\u0441\u044F \u0447\u0435\u0440\u0435\u0437 ~20 \u0441\u0435\u043A\u0443\u043D\u0434 \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u0430\u0432\u043A\u0438, \u0447\u0443\u0436\u0438\u0435 \u043F\u043E\u0434\u0442\u044F\u0433\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u043F\u0440\u0438 \u0437\u0430\u043F\u0443\u0441\u043A\u0435, \u0440\u0430\u0437 \u0432 1,5 \u043C\u0438\u043D\u0443\u0442\u044B \u0438 \u043F\u0440\u0438 \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0435 \u0432 \u043E\u043A\u043D\u043E \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u044B."), status === "error" && error && /*#__PURE__*/React.createElement("div", {
+  }, "\u0424\u0430\u0439\u043B \u043F\u0440\u043E\u0435\u043A\u0442\u0430 \u043B\u0435\u0436\u0438\u0442 \u043D\u0430 \u0414\u0438\u0441\u043A\u0435 \u0432 \u043F\u0430\u043F\u043A\u0435 \xAB\u041F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F\xBB \u2192 \u043F\u0430\u043F\u043A\u0430 \u0432\u0430\u0448\u0435\u0433\u043E \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F, \u0444\u0430\u0439\u043B lessons.js. \u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u044E\u0442\u0441\u044F \u0447\u0435\u0440\u0435\u0437 ~20 \u0441\u0435\u043A\u0443\u043D\u0434 \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u0430\u0432\u043A\u0438, \u0447\u0443\u0436\u0438\u0435 \u043F\u043E\u0434\u0442\u044F\u0433\u0438\u0432\u0430\u044E\u0442\u0441\u044F \u043F\u0440\u0438 \u0437\u0430\u043F\u0443\u0441\u043A\u0435, \u0440\u0430\u0437 \u0432 1,5 \u043C\u0438\u043D\u0443\u0442\u044B \u0438 \u043F\u0440\u0438 \u0432\u043E\u0437\u0432\u0440\u0430\u0442\u0435 \u0432 \u043E\u043A\u043D\u043E \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u044B."), status === "error" && error && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12.5,
       color: THEME.red
@@ -8166,7 +8167,45 @@ function SyncModal({
     small: true,
     disabled: busy,
     onClick: useManualToken
-  }, "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C")))), msg && /*#__PURE__*/React.createElement("div", {
+  }, "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C")))), window.lcShareMode && window.lcAPI.syncSetProxy && /*#__PURE__*/React.createElement("details", {
+    open: !info.proxyUrl && status === "error"
+  }, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      fontSize: 12.5,
+      color: "#5a6b7d",
+      cursor: "pointer"
+    }
+  }, "\u041F\u043E\u0441\u0440\u0435\u0434\u043D\u0438\u043A \u0434\u043B\u044F \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F ", info.proxyUrl ? "(настроен)" : "(нужен, если Яндекс не отдаёт файл браузеру)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 6,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "#7a8a9c",
+      lineHeight: 1.5
+    }
+  }, "\u0410\u0434\u0440\u0435\u0441 \u0432\u0430\u0448\u0435\u0433\u043E \u043F\u043E\u0441\u0440\u0435\u0434\u043D\u0438\u043A\u0430 \u043D\u0430 Cloudflare Workers (\u0432\u0438\u0434\u0430 https://\u2026workers.dev). \u0427\u0435\u0440\u0435\u0437 \u043D\u0435\u0433\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0438\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0444\u0430\u0439\u043B \u043F\u0440\u043E\u0435\u043A\u0442\u0430, \u0432\u0430\u0448 \u0442\u043E\u043A\u0435\u043D \u042F\u043D\u0434\u0435\u043A\u0441\u0430 \u043E\u043D \u043D\u0435 \u043F\u043E\u043B\u0443\u0447\u0430\u0435\u0442."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    style: inputStyle,
+    value: proxy,
+    onChange: e => setProxy(e.target.value),
+    placeholder: "https://lessons-proxy.\u0432\u0430\u0448\u0435-\u0438\u043C\u044F.workers.dev"
+  }), /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    onClick: async () => {
+      await window.lcAPI.syncSetProxy(proxy);
+      await onChanged();
+      setMsg("Адрес посредника сохранён. Нажмите «Синхронизировать сейчас».");
+    }
+  }, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C")))), msg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12.5,
       color: THEME.red

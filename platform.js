@@ -279,11 +279,22 @@
       document.head.appendChild(s);
     });
   }
+  const proxied = (href) => syncSt.proxyUrl.replace(/\/+$/, "") + "/?u=" + encodeURIComponent(href);
   async function ydDownloadText() {
     const r = await ydJson("GET", `/resources/download?${ydPathQ()}`);
     if (r.status >= 400) throw new Error(r.body.message || "Не удалось скачать файл (" + r.status + ")");
     const href = r.body.href;
     const tried = [];
+    // Способ 0: через посредника (если указан в настройках синхронизации).
+    if (syncSt.proxyUrl) {
+      try {
+        const res = await fetch(proxied(href));
+        if (res.ok) return unwrap(stripBom(await res.text()));
+        tried.push("через посредника: код " + res.status);
+      } catch (e) {
+        tried.push("через посредника: " + errMsg(e));
+      }
+    }
     // Способ 1: обычный запрос с заголовком Authorization — сервер скачивания разрешает такие запросы из браузера.
     try {
       const res = await fetch(href, { headers: { Authorization: "OAuth " + getToken() } });
@@ -309,7 +320,13 @@
     if (r.status >= 400) throw new Error(r.body.message || "Не удалось начать загрузку (" + r.status + ")");
     let res;
     try {
-      res = await fetch(r.body.href, { method: "PUT", body: new Blob([wrap(text)]) });
+      const body = new Blob([wrap(text)]);
+      try {
+        res = await fetch(r.body.href, { method: "PUT", body });
+      } catch (e1) {
+        if (!syncSt.proxyUrl) throw e1;
+        res = await fetch(proxied(r.body.href), { method: "PUT", body }); // напрямую не вышло — через посредника
+      }
     } catch (e) {
       throw new Error("Браузер не смог загрузить файл на Яндекс.Диск (" + errMsg(e) + "). Возможно, сервер загрузки не разрешает запросы из браузера.");
     }
@@ -367,7 +384,12 @@
   const sync = {
     syncInfo: async () => {
       await ready;
-      return { clientId: syncSt.clientId || "", connected: !!syncSt.token, lastSyncAt: syncSt.lastSyncAt || null };
+      return { clientId: syncSt.clientId || "", connected: !!syncSt.token, lastSyncAt: syncSt.lastSyncAt || null, proxyUrl: syncSt.proxyUrl || "" };
+    },
+    syncSetProxy: async (url) => {
+      await ready;
+      await saveSync({ proxyUrl: String(url || "").trim() });
+      return { ok: true };
     },
     syncSetClientId: async (id) => {
       await ready;
