@@ -28,6 +28,6 @@
 <script src="platform.js"></script>
 <script src="tablet-ui.js"></script>
 <script src="app.js"></script>
-<script>if ("serviceWorker" in navigator) { window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); }); }</script>
+<script>if ("serviceWorker" in navigator) { var hadController = !!navigator.serviceWorker.controller; navigator.serviceWorker.addEventListener("controllerchange", function () { if (hadController) location.reload(); }); window.addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () {}); }); }</script>
 </body>
 </html>
