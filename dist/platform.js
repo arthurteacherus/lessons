@@ -58,6 +58,11 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
   const WRAP_PREFIX = "window.__lcPull(";
   const WRAP_SUFFIX = ");\n";
   const wrap = (jsonText) => WRAP_PREFIX + jsonText + WRAP_SUFFIX;
+  function unwrap(text) {
+    if (!text.startsWith(WRAP_PREFIX)) return text;
+    const end = text.lastIndexOf(");");
+    return text.slice(WRAP_PREFIX.length, end === -1 ? undefined : end);
+  }
   const REDIRECT = location.origin + location.pathname.replace(/index\.html$/, "");
   window.lcRedirectUri = REDIRECT;
 
@@ -315,7 +320,27 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
   async function ydDownloadText() {
     const r = await ydJson("GET", `/resources/download?${ydPathQ()}`);
     if (r.status >= 400) throw new Error(r.body.message || "Не удалось скачать файл (" + r.status + ")");
-    return loadScriptPayload(r.body.href);
+    const href = r.body.href;
+    const tried = [];
+    // Способ 1: обычный запрос с заголовком Authorization — сервер скачивания разрешает такие запросы из браузера.
+    try {
+      const res = await fetch(href, { headers: { Authorization: "OAuth " + getToken() } });
+      if (res.ok) return unwrap(stripBom(await res.text()));
+      tried.push("запрос с авторизацией: код " + res.status);
+    } catch (e) {
+      tried.push("запрос с авторизацией: " + errMsg(e));
+    }
+    // Способ 2: подключить файл как <script> (CORS для скриптов не нужен).
+    try {
+      return await loadScriptPayload(href);
+    } catch (e) {
+      tried.push("как скрипт: " + errMsg(e));
+    }
+    let host = "";
+    try {
+      host = new URL(href).host;
+    } catch (e) {}
+    throw new Error("Не удалось скачать файл проекта с Яндекс.Диска (" + host + "). Что пробовали — " + tried.join("; "));
   }
   async function ydUploadText(text) {
     const r = await ydJson("GET", `/resources/upload?${ydPathQ()}&overwrite=true`);
