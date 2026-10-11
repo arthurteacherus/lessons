@@ -637,6 +637,22 @@ function cardsPageHtml(contentHtml, copies, fontPx, clip) {
   const row = `<tr style="height:${cellH}mm">${cell.repeat(cols)}</tr>`;
   return `<table style="border-collapse:collapse;table-layout:fixed;width:${CARD_PAGE_W_MM}mm;">${row.repeat(rows)}</table>`;
 }
+
+// Внутренний размер ячейки (мм) для заданного числа копий — по нему вписываются картинки.
+function cardCellSize(copies) {
+  const [cols, rows] = CARD_LAYOUTS[copies] || [1, 1];
+  return {
+    w: CARD_PAGE_W_MM / cols - 6,
+    h: CARD_PAGE_H_MM / rows - 7
+  };
+}
+// Картинка, вписанная в прямоугольник boxW×boxH мм (размер задан в px — так и Word, и печать понимают одинаково).
+function fitImgHtml(src, size, boxWmm, boxHmm) {
+  if (!size) return `<img src="${src}" style="max-width:100%;" />`;
+  const mmToPx = 3.7795;
+  const scale = Math.min(boxWmm * mmToPx / size.w, boxHmm * mmToPx / size.h);
+  return `<img src="${src}" width="${Math.round(size.w * scale)}" height="${Math.round(size.h * scale)}" style="display:block;margin:0 auto;" />`;
+}
 const CARDS_WORD_PAGE_CSS = `@page Section1 { size: 210mm 297mm; margin: 8mm 8mm 8mm 8mm; mso-page-orientation: portrait; } div.Section1 { page: Section1; }`;
 
 // Печать листа с карточками: поля 8 мм и размер A4 действуют только на время печати.
@@ -7464,7 +7480,28 @@ function PrintElementModal({
   const [showRed, setShowRed] = useState(!cl.hideRedFlags);
   const [showType, setShowType] = useState(!cl.hideExerciseType);
   const [overflow, setOverflow] = useState(false);
+  const [incTitle, setIncTitle] = useState(true);
+  const [incText, setIncText] = useState(true);
+  const [incEx, setIncEx] = useState(true);
+  const [incImg, setIncImg] = useState(true);
+  const [sizes, setSizes] = useState({}); // id картинки → {w,h} (естественный размер)
   const previewRef = useRef(null);
+  const hwImages = (lesson.homeworkAttachments || []).filter(a => a.kind === "image" && a.dataUrl);
+  const neededImages = target.kind === "attachment" ? hwImages.filter(a => a.id === target.id) : target.kind === "homeworkAll" ? hwImages : [];
+  useEffect(() => {
+    neededImages.forEach(a => {
+      if (sizes[a.id]) return;
+      const img = new Image();
+      img.onload = () => setSizes(prev => ({
+        ...prev,
+        [a.id]: {
+          w: img.naturalWidth,
+          h: img.naturalHeight
+        }
+      }));
+      img.src = a.dataUrl;
+    });
+  }, [target.kind, target.id]);
   const ex = target.kind === "exercise" ? data.examples.find(e => e.id === target.id) : null;
   const page = target.kind === "theory" ? data.theory.find(p => p.id === target.id) : null;
   let title = "Материал";
@@ -7483,11 +7520,34 @@ function PrintElementModal({
   } else if (target.kind === "homeworkText") {
     title = "Домашнее задание";
     contentHtml = `<div style="font-weight:bold;">${nl2br(escapeHtml(lesson.homework || ""))}</div>`;
+  } else if (target.kind === "attachment") {
+    const att = hwImages.find(a => a.id === target.id);
+    title = att ? att.name.replace(/\.[^.]+$/, "") || "Изображение" : "Изображение";
+    const cell = cardCellSize(copies);
+    contentHtml = att ? fitImgHtml(att.dataUrl, sizes[att.id], cell.w, cell.h - 2) : "";
+  } else if (target.kind === "homeworkAll") {
+    title = `Домашнее задание — ${lesson.topic || "урок"}`;
+    const cell = cardCellSize(copies);
+    const parts = [];
+    if (incTitle) parts.push(`<div style="font-weight:bold;font-size:1.15em;margin-bottom:6px;">Домашнее задание</div>`);
+    if (incText && (lesson.homework || "").trim()) parts.push(`<div style="font-weight:bold;margin-bottom:8px;">${nl2br(escapeHtml(lesson.homework))}</div>`);
+    if (incEx) {
+      (lesson.homeworkItems || []).map(it => data.examples.find(e => e.id === it.refId)).filter(Boolean).forEach((e2, i, arr) => {
+        parts.push((arr.length > 1 ? `<div style="margin-top:6px;"><b>${i + 1}.</b></div>` : "") + exerciseWorksheetHtml(e2, data, {
+          hideNotes: !showNote,
+          hideRedFlags: !showRed,
+          hideExerciseType: !showType,
+          hideExerciseTopics: true
+        }));
+      });
+    }
+    if (incImg) hwImages.forEach(a => parts.push(`<div style="margin-top:8px;">${fitImgHtml(a.dataUrl, sizes[a.id], cell.w, (cell.h - 2) * 0.55)}</div>`));
+    contentHtml = parts.join("");
   }
   useEffect(() => {
     const cells = previewRef.current ? Array.from(previewRef.current.querySelectorAll(".lc-card-cell")) : [];
     setOverflow(cells.some(c => c.scrollHeight > c.clientHeight + 2));
-  }, [copies, fontPx, showNote, showRed, showType, contentHtml]);
+  }, [copies, fontPx, showNote, showRed, showType, incTitle, incText, incEx, incImg, contentHtml]);
   const wordPage = () => cardsPageHtml(contentHtml, copies, fontPx, false);
   const doPrint = () => printCardsPdf(cardsPageHtml(contentHtml, copies, fontPx, false));
   const doWord = () => downloadWord(sanitizeFileName(title), title, wordPage(), {
@@ -7586,7 +7646,7 @@ function PrintElementModal({
     style: chip(copies === +n),
     onClick: () => setCopies(+n),
     title: `${CARD_LAYOUTS[n][0]} × ${CARD_LAYOUTS[n][1]}`
-  }, n)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, n)))), target.kind !== "attachment" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 700,
@@ -7603,7 +7663,57 @@ function PrintElementModal({
     key: px,
     style: chip(fontPx === px),
     onClick: () => setFontPx(px)
-  }, px)))), ex && /*#__PURE__*/React.createElement("div", {
+  }, px)))), target.kind === "homeworkAll" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 6,
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: incTitle,
+    onChange: e => setIncTitle(e.target.checked)
+  }), " \u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A \xAB\u0414\u043E\u043C\u0430\u0448\u043D\u0435\u0435 \u0437\u0430\u0434\u0430\u043D\u0438\u0435\xBB"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: incText,
+    onChange: e => setIncText(e.target.checked)
+  }), " \u0422\u0435\u043A\u0441\u0442 (\u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u043A \u0414\u0417)"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: incEx,
+    onChange: e => setIncEx(e.target.checked)
+  }), " \u0423\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u044F \u0414\u0417 (", (lesson.homeworkItems || []).length, ")"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: incImg,
+    onChange: e => setIncImg(e.target.checked)
+  }), " \u0418\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F (", hwImages.length, ")")), (ex || target.kind === "homeworkAll") && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gap: 6,
@@ -12588,12 +12698,27 @@ function LessonPage({
     onChange: e => setLesson({
       homework: e.target.value
     })
-  })), (lesson.homework || "").trim() && /*#__PURE__*/React.createElement("div", {
+  })), ((lesson.homework || "").trim() || (lesson.homeworkItems || []).length > 0 || (lesson.homeworkAttachments || []).some(a => a.kind === "image")) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: -6,
-      marginBottom: 12
+      marginBottom: 12,
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: () => setPrintTarget({
+      kind: "homeworkAll",
+      id: lesson.id
+    }),
+    title: "\u0422\u0435\u043A\u0441\u0442, \u0443\u043F\u0440\u0430\u0436\u043D\u0435\u043D\u0438\u044F \u0438 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u044F \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u0433\u043E \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u0432\u043C\u0435\u0441\u0442\u0435, \u0441 \u0432\u044B\u0431\u043E\u0440\u043E\u043C \u0447\u0438\u0441\u043B\u0430 \u043A\u043E\u043F\u0438\u0439 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435"
+  }, "\uD83D\uDDA8 \u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0432\u0441\u0451 \u0414\u0417"), (lesson.homework || "").trim() && /*#__PURE__*/React.createElement(Btn, {
     kind: "ghost",
     small: true,
     style: {
@@ -12604,7 +12729,7 @@ function LessonPage({
       kind: "homeworkText",
       id: lesson.id
     })
-  }, "\uD83D\uDDA8 \u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0442\u0435\u043A\u0441\u0442 \u0414\u0417")), /*#__PURE__*/React.createElement(Field, {
+  }, "\uD83D\uDDA8 \u0422\u043E\u043B\u044C\u043A\u043E \u0442\u0435\u043A\u0441\u0442")), /*#__PURE__*/React.createElement(Field, {
     label: "\u0424\u0430\u0439\u043B\u044B \u0438 \u0444\u043E\u0442\u043E \u043A \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C\u0443 \u0437\u0430\u0434\u0430\u043D\u0438\u044E"
   }, /*#__PURE__*/React.createElement("input", {
     ref: homeworkFileRef,
@@ -12661,7 +12786,14 @@ function LessonPage({
     },
     value: a.url,
     onChange: e => setHomeworkAttachmentUrl(a.id, e.target.value)
-  }), /*#__PURE__*/React.createElement("span", {
+  }), a.kind === "image" && a.dataUrl && /*#__PURE__*/React.createElement("span", {
+    className: "lc-iconbtn",
+    title: "\u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u044D\u0442\u043E \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0435 (\u043C\u043E\u0436\u043D\u043E \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u043F\u0438\u0439 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435)",
+    onClick: () => setPrintTarget({
+      kind: "attachment",
+      id: a.id
+    })
+  }, "\uD83D\uDDA8"), /*#__PURE__*/React.createElement("span", {
     onClick: () => removeHomeworkAttachment(a.id),
     style: {
       cursor: "pointer",
