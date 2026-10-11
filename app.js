@@ -554,7 +554,9 @@ function stripHtml(html) {
   div.innerHTML = html;
   return (div.textContent || div.innerText || "").trim();
 }
-function wordDocHtml(titleText, bodyHtml) {
+
+// opts.noTitle — без заголовка (для листов с карточками); opts.pageCss — своё поле/размер страницы Word.
+function wordDocHtml(titleText, bodyHtml, opts = {}) {
   return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
   <head><meta charset="utf-8"><title>${escapeHtml(titleText)}</title>
   <style>
@@ -564,16 +566,17 @@ function wordDocHtml(titleText, bodyHtml) {
     .red{color:#c0392b;font-weight:bold;}
     .muted{color:#777;font-size:11px;}
     .ex{margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #ddd;}
+    ${opts.pageCss || ""}
   </style>
-  </head><body><h1>${escapeHtml(titleText)}</h1>${bodyHtml}</body></html>`;
+  </head><body>${opts.noTitle ? "" : `<h1>${escapeHtml(titleText)}</h1>`}${opts.pageCss ? `<div class="Section1">${bodyHtml}</div>` : bodyHtml}</body></html>`;
 }
 
 // \u0418\u043c\u044f \u0444\u0430\u0439\u043b\u0430, \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0435 \u0434\u043b\u044f \u0444\u0430\u0439\u043b\u043e\u0432\u043e\u0439 \u0441\u0438\u0441\u0442\u0435\u043c\u044b Windows (\u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\u043d\u044b\u0435 \u0441\u0438\u043c\u0432\u043e\u043b\u044b, \u043e\u0431\u0440\u0435\u0437\u043a\u0430 \u0434\u043b\u0438\u043d\u044b).
 function sanitizeFileName(str) {
   return (str || "\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f";
 }
-function downloadWord(filename, titleText, bodyHtml) {
-  const html = wordDocHtml(titleText, bodyHtml);
+function downloadWord(filename, titleText, bodyHtml, opts) {
+  const html = wordDocHtml(titleText, bodyHtml, opts);
   const blob = new Blob(["\ufeff", html], {
     type: "application/msword"
   });
@@ -609,6 +612,48 @@ function printAsPdf(titleText, bodyHtml) {
     <h1 style="font-family:'Playfair Display',Georgia,serif;">${escapeHtml(titleText)}</h1>${bodyHtml}
   </div>`;
   setTimeout(() => window.print(), 80);
+}
+
+/* ============================================================
+   ПЕЧАТЬ/СКАЧИВАНИЕ ОТДЕЛЬНОГО ЭЛЕМЕНТА УРОКА: один и тот же материал повторяется N раз на листе A4
+   (карточки, которые режут и раздают ученикам). Сетка [столбцов, строк]; поля листа 8 мм.
+   ============================================================ */
+const CARD_LAYOUTS = {
+  1: [1, 1],
+  2: [1, 2],
+  4: [2, 2],
+  6: [2, 3],
+  8: [2, 4]
+};
+const CARD_PAGE_W_MM = 194; // A4 (210) минус поля по 8 мм
+const CARD_PAGE_H_MM = 277; // A4 (297) минус поля по 8 мм и небольшой запас, чтобы не рождался пустой лист
+
+function cardsPageHtml(contentHtml, copies, fontPx, clip) {
+  const [cols, rows] = CARD_LAYOUTS[copies] || [1, 1];
+  const cellW = CARD_PAGE_W_MM / cols;
+  const cellH = CARD_PAGE_H_MM / rows;
+  const border = copies > 1 ? "1px dashed #8a97a5" : "none";
+  const cell = `<td style="width:${cellW}mm;height:${cellH}mm;vertical-align:top;border:${border};padding:3mm;"><div class="lc-card-cell" style="height:${(cellH - 7).toFixed(1)}mm;overflow:${clip ? "hidden" : "visible"};font-size:${fontPx}px;line-height:1.4;">${contentHtml}</div></td>`;
+  const row = `<tr style="height:${cellH}mm">${cell.repeat(cols)}</tr>`;
+  return `<table style="border-collapse:collapse;table-layout:fixed;width:${CARD_PAGE_W_MM}mm;">${row.repeat(rows)}</table>`;
+}
+const CARDS_WORD_PAGE_CSS = `@page Section1 { size: 210mm 297mm; margin: 8mm 8mm 8mm 8mm; mso-page-orientation: portrait; } div.Section1 { page: Section1; }`;
+
+// Печать листа с карточками: поля 8 мм и размер A4 действуют только на время печати.
+function printCardsPdf(bodyHtml) {
+  ensurePrintArea();
+  document.getElementById("lc-cards-page-style")?.remove();
+  const st = document.createElement("style");
+  st.id = "lc-cards-page-style";
+  st.textContent = "@page { size: A4 portrait; margin: 8mm; }";
+  document.head.appendChild(st);
+  document.getElementById("lc-print-area").innerHTML = `<div style="font-family:'PT Sans',Arial,sans-serif;color:#12233a;">${bodyHtml}</div>`;
+  const cleanup = () => {
+    st.remove();
+    window.removeEventListener("afterprint", cleanup);
+  };
+  window.addEventListener("afterprint", cleanup);
+  setTimeout(() => window.print(), 120);
 }
 
 /* ============================================================
@@ -7404,6 +7449,259 @@ function SeatingChart({
     }
   })));
 }
+
+// Окно «Печать / скачать»: один элемент урока (упражнение, теория, текст ДЗ) в N копиях на листе A4.
+function PrintElementModal({
+  data,
+  lesson,
+  target,
+  onClose
+}) {
+  const cl = data.worksheetChecklist || defaultWorksheetChecklist();
+  const [copies, setCopies] = useState(2);
+  const [fontPx, setFontPx] = useState(14);
+  const [showNote, setShowNote] = useState(!cl.hideNotes);
+  const [showRed, setShowRed] = useState(!cl.hideRedFlags);
+  const [showType, setShowType] = useState(!cl.hideExerciseType);
+  const [overflow, setOverflow] = useState(false);
+  const previewRef = useRef(null);
+  const ex = target.kind === "exercise" ? data.examples.find(e => e.id === target.id) : null;
+  const page = target.kind === "theory" ? data.theory.find(p => p.id === target.id) : null;
+  let title = "Материал";
+  let contentHtml = "";
+  if (ex) {
+    title = stripHtml(ex.text).slice(0, 50) || "Упражнение";
+    contentHtml = exerciseWorksheetHtml(ex, data, {
+      hideNotes: !showNote,
+      hideRedFlags: !showRed,
+      hideExerciseType: !showType,
+      hideExerciseTopics: true
+    });
+  } else if (page) {
+    title = page.title || "Теория";
+    contentHtml = theoryPageToHtml(page) + (page.diagrams || []).map(dg => diagramToHtmlWithImage(dg)).join("");
+  } else if (target.kind === "homeworkText") {
+    title = "Домашнее задание";
+    contentHtml = `<div style="font-weight:bold;">${nl2br(escapeHtml(lesson.homework || ""))}</div>`;
+  }
+  useEffect(() => {
+    const cells = previewRef.current ? Array.from(previewRef.current.querySelectorAll(".lc-card-cell")) : [];
+    setOverflow(cells.some(c => c.scrollHeight > c.clientHeight + 2));
+  }, [copies, fontPx, showNote, showRed, showType, contentHtml]);
+  const wordPage = () => cardsPageHtml(contentHtml, copies, fontPx, false);
+  const doPrint = () => printCardsPdf(cardsPageHtml(contentHtml, copies, fontPx, false));
+  const doWord = () => downloadWord(sanitizeFileName(title), title, wordPage(), {
+    noTitle: true,
+    pageCss: CARDS_WORD_PAGE_CSS
+  });
+  const chip = active => ({
+    padding: "8px 14px",
+    borderRadius: 10,
+    border: `1.5px solid ${active ? THEME.bgDark : THEME.border}`,
+    background: active ? THEME.pastel : "#fff",
+    fontWeight: 700,
+    cursor: "pointer",
+    fontSize: 13.5
+  });
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(19,44,83,0.75)",
+      zIndex: 1200,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    },
+    onClick: e => e.target === e.currentTarget && onClose()
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: THEME.panel,
+      color: "#12233a",
+      borderRadius: 16,
+      padding: 20,
+      width: "min(820px, 96vw)",
+      maxHeight: "92vh",
+      overflow: "auto",
+      display: "grid",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Heading, {
+    size: 18,
+    style: {
+      color: "#12233a",
+      margin: 0
+    }
+  }, "\u041F\u0435\u0447\u0430\u0442\u044C \u0438 \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#7a8a9c",
+      marginTop: 2
+    }
+  }, title)), /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: onClose
+  }, "\u0417\u0430\u043A\u0440\u044B\u0442\u044C")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 18,
+      flexWrap: "wrap",
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 260px",
+      display: "grid",
+      gap: 12,
+      minWidth: 240
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: THEME.goldDim,
+      marginBottom: 6
+    }
+  }, "\u0421\u043A\u043E\u043B\u044C\u043A\u043E \u0440\u0430\u0437 \u043D\u0430 \u043E\u0434\u043D\u043E\u043C \u043B\u0438\u0441\u0442\u0435 A4"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap"
+    }
+  }, Object.keys(CARD_LAYOUTS).map(n => /*#__PURE__*/React.createElement("span", {
+    key: n,
+    style: chip(copies === +n),
+    onClick: () => setCopies(+n),
+    title: `${CARD_LAYOUTS[n][0]} × ${CARD_LAYOUTS[n][1]}`
+  }, n)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: THEME.goldDim,
+      marginBottom: 6
+    }
+  }, "\u0420\u0430\u0437\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap"
+    }
+  }, [11, 12, 14, 16, 18, 22].map(px => /*#__PURE__*/React.createElement("span", {
+    key: px,
+    style: chip(fontPx === px),
+    onClick: () => setFontPx(px)
+  }, px)))), ex && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 6,
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: showNote,
+    onChange: e => setShowNote(e.target.checked)
+  }), " \u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C \u043F\u0440\u0438\u043C\u0435\u0447\u0430\u043D\u0438\u0435"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: showRed,
+    onChange: e => setShowRed(e.target.checked)
+  }), " \u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C \u043A\u0440\u0430\u0441\u043D\u0443\u044E \u0437\u0430\u043C\u0435\u0442\u043A\u0443 (\u2691)"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: showType,
+    onChange: e => setShowType(e.target.checked)
+  }), " \u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C \xAB\u0422\u0438\u043F: \u2026\xBB")), overflow && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: THEME.red,
+      background: THEME.redBg,
+      borderRadius: 8,
+      padding: "8px 10px",
+      lineHeight: 1.45
+    }
+  }, "\u041C\u0430\u0442\u0435\u0440\u0438\u0430\u043B \u043D\u0435 \u043F\u043E\u043C\u0435\u0449\u0430\u0435\u0442\u0441\u044F \u0432 \u043E\u0434\u043D\u0443 \u044F\u0447\u0435\u0439\u043A\u0443: \u0447\u0430\u0441\u0442\u044C \u0442\u0435\u043A\u0441\u0442\u0430 \u043E\u0431\u0440\u0435\u0436\u0435\u0442\u0441\u044F. \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043C\u0435\u043D\u044C\u0448\u0435 \u043A\u043E\u043F\u0438\u0439 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435 \u0438\u043B\u0438 \u043C\u0435\u043D\u044C\u0448\u0438\u0439 \u0440\u0430\u0437\u043C\u0435\u0440 \u0442\u0435\u043A\u0441\u0442\u0430."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "primary",
+    onClick: doPrint
+  }, "\uD83D\uDDA8 \u041F\u0435\u0447\u0430\u0442\u044C / PDF"), /*#__PURE__*/React.createElement(Btn, {
+    kind: "pastel",
+    onClick: doWord
+  }, "\uD83D\uDCC4 \u0421\u043A\u0430\u0447\u0430\u0442\u044C Word")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#7a8a9c",
+      lineHeight: 1.5
+    }
+  }, "\u041A\u043E\u043F\u0438\u0438 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043B\u0435\u043D\u044B \u043F\u0443\u043D\u043A\u0442\u0438\u0440\u043D\u044B\u043C\u0438 \u043B\u0438\u043D\u0438\u044F\u043C\u0438 \u2014 \u043F\u043E \u043D\u0438\u043C \u0443\u0434\u043E\u0431\u043D\u043E \u0440\u0435\u0437\u0430\u0442\u044C. \u0412 \u043E\u043A\u043D\u0435 \u043F\u0435\u0447\u0430\u0442\u0438 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \xAB\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043A\u0430\u043A PDF\xBB, \u0435\u0441\u043B\u0438 \u043D\u0443\u0436\u0435\u043D \u0444\u0430\u0439\u043B.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "0 0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: THEME.goldDim,
+      marginBottom: 6
+    }
+  }, "\u041F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440 \u043B\u0438\u0441\u0442\u0430"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${THEME.border}`,
+      background: "#fff",
+      boxShadow: "0 2px 10px rgba(19,44,83,0.15)",
+      width: 330,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    ref: previewRef,
+    style: {
+      zoom: 0.4,
+      width: "210mm",
+      padding: "8mm",
+      fontFamily: BODY_FONT,
+      color: "#12233a"
+    },
+    dangerouslySetInnerHTML: {
+      __html: cardsPageHtml(contentHtml, copies, fontPx, true)
+    }
+  }))))));
+}
 const WORKSHEET_CHECKLIST_ITEMS = [{
   key: "hideNotes",
   label: "Примечания к упражнениям"
@@ -9522,6 +9820,818 @@ function AddJournalMarkModal({
   }, "\u041E\u0442\u043C\u0435\u043D\u0430"))));
 }
 
+/* ============================================================
+   ИМПОРТ ОТМЕТОК ИЗ ТАБЛИЦЫ ШКОЛЬНОГО ЭЛЕКТРОННОГО ЖУРНАЛА (.xlsx) — тот же разбор таблицы, что в журнале по
+   литературе. Лист: в строке 1 заголовок («6Б: Русский язык (…) - I четверть»), в строке-шапке даты («1сен»),
+   ниже строки учеников: № | Ф.И. | отметки по датам (1–5, «Н»).
+   Сравнение — по КОЛИЧЕСТВУ отметок каждого значения (1, 2, 3, 4, 5, Н) у каждого ученика в пределах дат таблицы:
+   • количества совпали (даты могут быть другие) — ничего не добавляется;
+   • в таблице отметок больше — недостающие добавляются с датами из таблицы;
+   • в журнале отметок больше — программа показывает предупреждение: оставить или удалить каждую лишнюю.
+   ============================================================ */
+async function inflateRawBytes(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function readZipEntryBytes(buf, wanted) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 70000); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("это не файл Excel (не найден архив)");
+  const total = dv.getUint16(eocd + 10, true);
+  let pos = dv.getUint32(eocd + 16, true);
+  for (let i = 0; i < total; i++) {
+    if (dv.getUint32(pos, true) !== 0x02014b50) break;
+    const method = dv.getUint16(pos + 10, true);
+    const compSize = dv.getUint32(pos + 20, true);
+    const nameLen = dv.getUint16(pos + 28, true);
+    const extraLen = dv.getUint16(pos + 30, true);
+    const commentLen = dv.getUint16(pos + 32, true);
+    const local = dv.getUint32(pos + 42, true);
+    const name = new TextDecoder().decode(u8.subarray(pos + 46, pos + 46 + nameLen));
+    if (name === wanted) {
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      const raw = u8.subarray(start, start + compSize);
+      return method === 0 ? raw : await inflateRawBytes(raw);
+    }
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  throw new Error("в архиве нет нужного файла: " + wanted);
+}
+function xmlAll(root, name) {
+  return Array.from(root.getElementsByTagName("*")).filter(e => e.localName === name);
+}
+async function xlsxToSheets(buf) {
+  const dec = b => new TextDecoder("utf-8").decode(b);
+  const xml = t => new DOMParser().parseFromString(t, "application/xml");
+  let wb, rels;
+  try {
+    wb = xml(dec(await readZipEntryBytes(buf, "xl/workbook.xml")));
+    rels = xml(dec(await readZipEntryBytes(buf, "xl/_rels/workbook.xml.rels")));
+  } catch (e) {
+    throw new Error("это не файл Excel (.xlsx)");
+  }
+  let ss = [];
+  try {
+    const sx = xml(dec(await readZipEntryBytes(buf, "xl/sharedStrings.xml")));
+    ss = xmlAll(sx, "si").map(si => xmlAll(si, "t").filter(t => !t.parentNode || t.parentNode.localName !== "rPh").map(t => t.textContent).join(""));
+  } catch (e) {
+    /* без общих строк */
+  }
+  const NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const out = [];
+  for (const sh of xmlAll(wb, "sheet")) {
+    const rid = sh.getAttributeNS(NS_R, "id") || sh.getAttribute("r:id");
+    const rel = xmlAll(rels, "Relationship").find(r => r.getAttribute("Id") === rid);
+    if (!rel) continue;
+    let target = (rel.getAttribute("Target") || "").replace(/^\//, "");
+    if (!/^xl\//.test(target)) target = "xl/" + target;
+    let sdoc;
+    try {
+      sdoc = xml(dec(await readZipEntryBytes(buf, target)));
+    } catch (e) {
+      continue;
+    }
+    const rows = {};
+    xmlAll(sdoc, "c").forEach(c => {
+      const m = (c.getAttribute("r") || "").match(/^([A-Z]+)(\d+)$/);
+      if (!m) return;
+      const t = c.getAttribute("t");
+      const v = Array.from(c.children).find(k => k.localName === "v");
+      const is = Array.from(c.children).find(k => k.localName === "is");
+      let val = null;
+      if (t === "s" && v) val = ss[+v.textContent];else if (t === "inlineStr" && is) val = xmlAll(is, "t").map(x => x.textContent).join("");else if (v) val = t === "str" || t === "e" || t === "b" ? v.textContent : isNaN(+v.textContent) ? v.textContent : +v.textContent;
+      if (val === null || val === undefined || val === "") return;
+      (rows[+m[2]] = rows[+m[2]] || {})[m[1]] = val;
+    });
+    out.push({
+      name: sh.getAttribute("name") || "",
+      rows
+    });
+  }
+  return out;
+}
+const JR_MONTHS = {
+  янв: 1,
+  фев: 2,
+  мар: 3,
+  апр: 4,
+  май: 5,
+  мая: 5,
+  июн: 6,
+  июл: 7,
+  авг: 8,
+  сен: 9,
+  окт: 10,
+  ноя: 11,
+  дек: 12
+};
+function jrParseDate(text, startYear) {
+  const s = String(text).trim().toLowerCase();
+  let day = null,
+    mon = null;
+  let m = s.match(/^(\d{1,2})\s*([а-яё]{3,})\.?$/);
+  if (m) {
+    day = +m[1];
+    mon = JR_MONTHS[m[2].slice(0, 3)] || null;
+  } else if (m = s.match(/^(\d{1,2})[./](\d{1,2})(?:[./]\d{2,4})?$/)) {
+    day = +m[1];
+    mon = +m[2];
+  }
+  if (!day || !mon || day > 31 || mon > 12) return null;
+  const year = mon >= 9 ? startYear : startYear + 1;
+  return `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+// Ключ имени: регистр, «ё» и порядок слов не важны.
+function jrNameKey(n) {
+  return String(n || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9 ]+/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
+}
+// Листы одного файла → группа, даты-столбцы, ученики и их отметки.
+function parseJournalSheets(fileName, sheets) {
+  const fy = fileName.match(/(\d{4})\s*[-–]\s*(\d{4})/);
+  const now = new Date();
+  const startYear = fy ? +fy[1] : now.getMonth() + 1 >= 9 ? now.getFullYear() : now.getFullYear() - 1;
+  const fnClass = fileName.replace(/^.*?\d{4}\s*[-–]\s*\d{4}_/, "").match(/^(\d{1,2})\s*([А-Яа-яA-Za-z])?(?=[_\s.])/);
+  const res = [];
+  sheets.forEach(sh => {
+    const rowNums = Object.keys(sh.rows).map(Number).sort((a, b) => a - b);
+    if (!rowNums.length) return;
+    const title = String(Object.values(sh.rows[rowNums[0]])[0] || "");
+    const hdrRow = rowNums.find(r => Object.values(sh.rows[r]).filter(v => typeof v === "string" && jrParseDate(v, startYear)).length >= 2);
+    if (!hdrRow) return;
+    const columns = [];
+    Object.entries(sh.rows[hdrRow]).forEach(([col, v]) => {
+      const dt = typeof v === "string" ? jrParseDate(v, startYear) : null;
+      if (dt) columns.push({
+        col,
+        date: dt,
+        label: v
+      });
+    });
+    const students = [];
+    rowNums.filter(r => r > hdrRow).forEach(r => {
+      const row = sh.rows[r];
+      if (typeof row.A !== "number" || typeof row.B !== "string") return;
+      const cells = {};
+      columns.forEach(c => {
+        const raw = row[c.col];
+        if (raw === undefined) return;
+        const toks = String(raw).replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+        const nums = toks.filter(t => /^[1-5]$/.test(t));
+        const abs = toks.some(t => /^[НHнh]$/.test(t));
+        const bad = toks.filter(t => !/^[1-5]$/.test(t) && !/^[НHнh]$/.test(t));
+        // ячейка «5 Н» (оценка и Н сразу) — берётся оценка, как в журнале по литературе
+        if (nums.length || abs) cells[c.col] = {
+          value: nums.length ? +nums[nums.length - 1] : "Н",
+          both: nums.length > 0 && abs,
+          bad
+        };else if (bad.length) cells[c.col] = {
+          value: null,
+          bad
+        };
+      });
+      students.push({
+        name: row.B.trim().replace(/\s+/g, " "),
+        cells
+      });
+    });
+    const tm = title.match(/^\s*(\d{1,2})\s*([А-Яа-яA-Za-z])?\s*:/);
+    const grade = tm ? tm[1] : fnClass ? fnClass[1] : "";
+    const letterName = tm && tm[2] || fnClass && fnClass[2] || "";
+    const teacher = ((title.match(/\(([^)]+)\)/) || [])[1] || "").trim();
+    const groupTag = ((title.match(/\/\s*([^(]+?)\s*\(/) || [])[1] || "").trim();
+    res.push({
+      sheetName: sh.name,
+      title,
+      grade,
+      letterName,
+      teacher,
+      groupTag,
+      columns,
+      students
+    });
+  });
+  return res;
+}
+const JR_VALUES = [1, 2, 3, 4, 5, "Н"];
+const dayDiff = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+
+// Описание «вида работы» отметки журнала для окна предупреждения: тип урока, тема, упражнение, комментарий.
+function describeMarkWork(data, m) {
+  const parts = [];
+  const lesson = m.lessonId ? data.lessons.find(l => l.id === m.lessonId) : null;
+  if (lesson) {
+    const types = (lesson.lessonTypeTagIds || []).map(id => data.tags.lessonType.find(t => t.id === id)?.name).filter(Boolean);
+    if (types.length) parts.push(types.join(", "));
+    if (lesson.topic) parts.push(lesson.topic);
+  }
+  if (m.exerciseId) {
+    const ex = data.examples.find(e => e.id === m.exerciseId);
+    if (ex) parts.push("упражнение: " + stripHtml(ex.text).slice(0, 60));
+  }
+  if (m.reason && !(m.exerciseId && parts.some(p => p.includes(m.reason)))) parts.push(m.reason);
+  return parts.join(" · ");
+}
+
+// Разбор отметок одного ученика: сопоставляет отметки таблицы и журнала по значению (сначала точное совпадение
+// даты, затем ближайшие даты) и возвращает, что надо добавить (остаток таблицы) и что лишнее в журнале (остаток журнала).
+function planStudentMarks(d, student, st, sheet) {
+  const dates = sheet.columns.map(c => c.date).sort();
+  const minD = dates[0];
+  const maxD = dates[dates.length - 1];
+  const excel = [];
+  sheet.columns.forEach(c => {
+    const cell = st.cells[c.col];
+    if (cell && cell.value !== null) excel.push({
+      date: c.date,
+      value: cell.value,
+      label: c.label
+    });
+  });
+  const journal = d.marks.filter(m => m.studentId === student.id && (m.scale || "5") === "5" && m.date >= minD && m.date <= maxD).map(m => ({
+    id: m.id,
+    date: m.date,
+    value: m.value === "Н" ? "Н" : +m.value,
+    mark: m
+  }));
+  const toAdd = [];
+  const surplus = [];
+  JR_VALUES.forEach(v => {
+    let X = excel.filter(e => e.value === v);
+    let Y = journal.filter(j => j.value === v);
+    // 1) точные совпадения даты
+    X = X.filter(e => {
+      const i = Y.findIndex(j => j.date === e.date);
+      if (i === -1) return true;
+      Y.splice(i, 1);
+      return false;
+    });
+    // 2) оставшиеся — парами по ближайшим датам (даты не совпали, но отметка в журнале уже есть)
+    while (X.length && Y.length) {
+      let best = null;
+      X.forEach((e, xi) => Y.forEach((j, yi) => {
+        const diff = dayDiff(e.date, j.date);
+        if (!best || diff < best.diff) best = {
+          xi,
+          yi,
+          diff
+        };
+      }));
+      X.splice(best.xi, 1);
+      Y.splice(best.yi, 1);
+    }
+    toAdd.push(...X);
+    surplus.push(...Y);
+  });
+  return {
+    toAdd,
+    surplus
+  };
+}
+
+// План импорта (без изменения данных): по каждому выбранному листу — найденные ученики, что добавить, что лишнее.
+function planJournalImport(d, items) {
+  return items.map(it => {
+    const sh = it.sheet;
+    const grade = it.grade;
+    const letterId = it.letterId || null;
+    const rep = {
+      label: `${grade}${it.letterLabel || ""}${sh.groupTag ? " · " + sh.groupTag : ""}`,
+      grade,
+      letterId,
+      sheet: sh,
+      studentsTotal: sh.students.length,
+      matched: 0,
+      unmatched: [],
+      people: [],
+      bad: [],
+      doubles: 0
+    };
+    const pool = d.students.filter(s => s.class === grade && !s.courseId);
+    const pref = pool.filter(s => letterId ? s.classLetterId === letterId : !s.classLetterId);
+    const fallback = letterId ? pool.filter(s => !s.classLetterId) : [];
+    sh.students.forEach(st => {
+      const key = jrNameKey(st.name);
+      const s = pref.find(x => jrNameKey(x.name) === key) || fallback.find(x => jrNameKey(x.name) === key) || null;
+      Object.entries(st.cells).forEach(([col, cell]) => {
+        const c = sh.columns.find(x => x.col === col);
+        if (cell.bad && cell.bad.length) rep.bad.push(`${st.name}, ${c ? c.label : col}: «${cell.bad.join(" ")}»`);
+        if (cell.both) rep.doubles++;
+      });
+      if (!s) {
+        rep.unmatched.push(st.name);
+        return;
+      }
+      rep.matched++;
+      const p = planStudentMarks(d, s, st, sh);
+      if (p.toAdd.length || p.surplus.length) rep.people.push({
+        student: s,
+        toAdd: p.toAdd,
+        surplus: p.surplus
+      });
+    });
+    rep.addCount = rep.people.reduce((n, p) => n + p.toAdd.filter(x => x.value !== "Н").length, 0);
+    rep.absCount = rep.people.reduce((n, p) => n + p.toAdd.filter(x => x.value === "Н").length, 0);
+    rep.surplusCount = rep.people.reduce((n, p) => n + p.surplus.length, 0);
+    rep.skipped = rep.matched === 0;
+    return rep;
+  });
+}
+
+// Записывает план в данные: удаляет выбранные лишние отметки (deleteIds), добавляет недостающие (если на эту дату у
+// ученика уже стоит другая отметка — пропускает и сообщает), заводит/находит урок на дату. Возвращает отчёт.
+function applyJournalPlan(d, plans, deleteIds) {
+  const del = new Set(deleteIds);
+  const result = {
+    added: 0,
+    absAdded: 0,
+    deleted: 0,
+    lessonsCreated: 0,
+    blocked: []
+  };
+  if (del.size) {
+    d.marks = d.marks.filter(m => !del.has(m.id));
+    d.lessons.forEach(l => (l.items || []).forEach(it => itemStudents(it).forEach(en => {
+      if (en.markId && del.has(en.markId)) {
+        en.markId = null;
+        en.grade = "";
+      }
+    })));
+    result.deleted = del.size;
+  }
+  plans.forEach(rep => {
+    const group = {
+      class: rep.grade,
+      courseId: null,
+      classLetterId: rep.letterId
+    };
+    const lessonByDate = {};
+    rep.people.forEach(p => {
+      p.toAdd.forEach(e => {
+        if (d.marks.some(m => m.studentId === p.student.id && m.date === e.date && (m.scale || "5") === "5")) {
+          result.blocked.push(`${p.student.name}: ${e.value} за ${formatDateRu(e.date)} — на эту дату в журнале уже стоит другая отметка`);
+          return;
+        }
+        let lesson = lessonByDate[e.date];
+        if (!lesson) {
+          lesson = d.lessons.find(l => sameLessonGroup(l, group) && !l.archived && (l.actualDate || l.plannedDate) === e.date);
+          if (!lesson) {
+            const id = createSingleLesson(d, {
+              kind: "class",
+              value: rep.grade,
+              classLetterId: rep.letterId,
+              topic: "",
+              plannedDate: e.date
+            });
+            lesson = d.lessons.find(l => l.id === id);
+            lesson.needsWork = true;
+            result.lessonsCreated++;
+          }
+          lessonByDate[e.date] = lesson;
+        }
+        d.marks.push({
+          id: uid(),
+          studentId: p.student.id,
+          value: e.value,
+          date: e.date,
+          reason: "",
+          scale: "5",
+          excused: e.value === "Н" ? true : null,
+          lessonId: lesson.id,
+          exerciseId: null
+        });
+        if (e.value === "Н") result.absAdded++;else result.added++;
+      });
+    });
+  });
+  return result;
+}
+function JournalXlsxImportModal({
+  data,
+  update,
+  onClose
+}) {
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState("pick"); // pick | warn | done
+  const [plans, setPlans] = useState([]);
+  const [decisions, setDecisions] = useState({}); // markId -> "delete" | "keep"
+  const [result, setResult] = useState(null);
+  const [err, setErr] = useState("");
+  const inputRef = useRef(null);
+  const sheetsFlat = files.flatMap((f, fi) => f.sheets.map((s, si) => ({
+    fi,
+    si,
+    s
+  })));
+  const patchSheet = (fi, si, patch) => setFiles(prev => prev.map((f, i) => i !== fi ? f : {
+    ...f,
+    sheets: f.sheets.map((s, j) => j !== si ? s : {
+      ...s,
+      ...patch
+    })
+  }));
+  const onPick = async e => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!list.length) return;
+    setBusy(true);
+    setErr("");
+    const added = [];
+    for (const f of list) {
+      try {
+        const parsed = parseJournalSheets(f.name, await xlsxToSheets(await f.arrayBuffer()));
+        if (!parsed.length) {
+          setErr("В файле «" + f.name + "» не найдена таблица с датами и отметками");
+          continue;
+        }
+        added.push({
+          name: f.name,
+          sheets: parsed
+        });
+      } catch (ex) {
+        setErr("Не удалось прочитать «" + f.name + "»: " + (ex && ex.message || ex));
+      }
+    }
+    setFiles(prev => {
+      const all = [...prev, ...added];
+      const freq = {};
+      all.forEach(f => f.sheets.forEach(s => {
+        freq[s.teacher] = (freq[s.teacher] || 0) + 1;
+      }));
+      const top = Object.keys(freq).sort((a, b) => freq[b] - freq[a])[0];
+      return all.map(f => added.includes(f) ? {
+        ...f,
+        sheets: f.sheets.map(s => {
+          const letter = lettersForGrade(data, s.grade).find(cl => cl.name.toLowerCase() === (s.letterName || "").toLowerCase());
+          return {
+            ...s,
+            checked: s.teacher === top,
+            letterId: letter ? letter.id : ""
+          };
+        })
+      } : f);
+    });
+    setBusy(false);
+  };
+  const chosen = sheetsFlat.filter(x => x.s.checked).map(x => ({
+    sheet: x.s,
+    grade: x.s.grade,
+    letterId: x.s.letterId,
+    letterLabel: x.s.letterId ? classLetterName(data, x.s.letterId) : ""
+  }));
+  const preview = useMemo(() => planJournalImport(data, chosen), [data, files]);
+  const totalAdd = preview.reduce((n, r) => n + r.addCount + r.absCount, 0);
+  const totalSurplus = preview.reduce((n, r) => n + r.surplusCount, 0);
+  const finish = async (plansArg, deleteIds) => {
+    // страховка: копия проекта до изменений (папка данных приложения / хранилище планшета)
+    try {
+      if (window.lcAPI.snapshot) await window.lcAPI.snapshot("до-импорта-журнала", JSON.stringify(data));
+    } catch (e) {}
+    // отчёт считаем на копии (update выполняется позже, результат из него сразу не получить)
+    const res = applyJournalPlan(structuredClone(data), plansArg, deleteIds);
+    update(d => {
+      applyJournalPlan(d, plansArg, deleteIds);
+      return d;
+    });
+    setResult(res);
+    setStep("done");
+  };
+  const start = () => {
+    if (totalSurplus > 0) {
+      setPlans(preview);
+      const dec = {};
+      preview.forEach(r => r.people.forEach(p => p.surplus.forEach(s => {
+        dec[s.id] = "keep";
+      })));
+      setDecisions(dec);
+      setStep("warn");
+    } else {
+      setPlans(preview);
+      finish(preview, []);
+    }
+  };
+  const applyWithDecisions = () => finish(plans, Object.keys(decisions).filter(id => decisions[id] === "delete"));
+  const modalBox = {
+    background: THEME.panel,
+    color: "#12233a",
+    borderRadius: 16,
+    padding: 22,
+    width: "min(900px, 96vw)",
+    maxHeight: "92vh",
+    overflow: "auto",
+    display: "grid",
+    gap: 12
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(19,44,83,0.75)",
+      zIndex: 1200,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16
+    },
+    onClick: e => e.target === e.currentTarget && step === "pick" && onClose()
+  }, /*#__PURE__*/React.createElement("div", {
+    style: modalBox
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Heading, {
+    size: 18,
+    style: {
+      color: "#12233a",
+      margin: 0
+    }
+  }, "\u0418\u043C\u043F\u043E\u0440\u0442 \u043E\u0442\u043C\u0435\u0442\u043E\u043A \u0438\u0437 \u044D\u043B\u0435\u043A\u0442\u0440\u043E\u043D\u043D\u043E\u0433\u043E \u0436\u0443\u0440\u043D\u0430\u043B\u0430"), /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: onClose
+  }, step === "done" ? "Закрыть" : "Отмена")), /*#__PURE__*/React.createElement("input", {
+    ref: inputRef,
+    type: "file",
+    multiple: true,
+    accept: ".xlsx",
+    style: {
+      display: "none"
+    },
+    onChange: onPick
+  }), step === "pick" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      lineHeight: 1.55
+    }
+  }, "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u043A\u0430\u0447\u0430\u043D\u043D\u044B\u0435 \u0438\u0437 \u0448\u043A\u043E\u043B\u044C\u043D\u043E\u0433\u043E \u0436\u0443\u0440\u043D\u0430\u043B\u0430 \u0442\u0430\u0431\u043B\u0438\u0446\u044B (\u043C\u043E\u0436\u043D\u043E \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0441\u0440\u0430\u0437\u0443). \u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u043D\u0430\u0439\u0434\u0451\u0442 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043F\u043E \u0444\u0430\u043C\u0438\u043B\u0438\u0438 \u0438 \u0438\u043C\u0435\u043D\u0438 \u0438 ", /*#__PURE__*/React.createElement("b", null, "\u0441\u0440\u0430\u0432\u043D\u0438\u0442 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E \u043E\u0446\u0435\u043D\u043E\u043A \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F (1, 2, 3, 4, 5, \xAB\u041D\xBB)"), " \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435 \u0438 \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u0437\u0430 \u0434\u0430\u0442\u044B \u0442\u0430\u0431\u043B\u0438\u0446\u044B. \u0415\u0441\u043B\u0438 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u043E \u0441\u043E\u0432\u043F\u0430\u043B\u043E, \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u0441\u044F, \u0434\u0430\u0436\u0435 \u0435\u0441\u043B\u0438 \u0434\u0430\u0442\u044B \u0440\u0430\u0437\u043D\u044B\u0435. \u0415\u0441\u043B\u0438 \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435 \u043E\u0446\u0435\u043D\u043E\u043A \u0431\u043E\u043B\u044C\u0448\u0435, \u043D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0434\u043E\u0431\u0430\u0432\u044F\u0442\u0441\u044F. \u0415\u0441\u043B\u0438 \u0431\u043E\u043B\u044C\u0448\u0435 \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435, \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0434\u0438\u0442 \u0438 \u0441\u043F\u0440\u043E\u0441\u0438\u0442, \u0447\u0442\u043E \u0434\u0435\u043B\u0430\u0442\u044C."), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Btn, {
+    kind: "pastel",
+    disabled: busy,
+    onClick: () => inputRef.current && inputRef.current.click()
+  }, busy ? "Читаю…" : files.length ? "Добавить ещё файлы…" : "Выбрать файлы (.xlsx)…")), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: THEME.red
+    }
+  }, err), sheetsFlat.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${THEME.border}`,
+      borderRadius: 10,
+      overflow: "auto",
+      maxHeight: "44vh"
+    }
+  }, sheetsFlat.map(({
+    fi,
+    si,
+    s
+  }) => {
+    const rep = s.checked ? preview[chosen.findIndex(c => c.sheet === s)] : null;
+    const letters = lettersForGrade(data, s.grade);
+    return /*#__PURE__*/React.createElement("div", {
+      key: fi + "-" + si,
+      style: {
+        padding: "10px 12px",
+        borderBottom: `1px solid ${THEME.border}`,
+        opacity: s.checked ? 1 : 0.6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: !!s.checked,
+      onChange: e => patchSheet(fi, si, {
+        checked: e.target.checked
+      })
+    }), /*#__PURE__*/React.createElement("b", {
+      style: {
+        flex: 1,
+        minWidth: 200
+      }
+    }, s.title || s.sheetName), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: THEME.goldDim
+      }
+    }, "\u043A\u043B\u0430\u0441\u0441:"), /*#__PURE__*/React.createElement("b", null, s.grade || "?"), /*#__PURE__*/React.createElement("select", {
+      style: {
+        ...inputStyle,
+        width: "auto",
+        padding: "4px 8px",
+        fontSize: 12.5
+      },
+      value: s.letterId || "",
+      onChange: e => patchSheet(fi, si, {
+        letterId: e.target.value
+      })
+    }, /*#__PURE__*/React.createElement("option", {
+      value: ""
+    }, "\u0431\u0435\u0437 \u043B\u0438\u0442\u0435\u0440\u044B"), letters.map(cl => /*#__PURE__*/React.createElement("option", {
+      key: cl.id,
+      value: cl.id
+    }, s.grade, cl.name)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "#7a8a9c",
+        marginLeft: 26
+      }
+    }, "\u0424\u0430\u0439\u043B: ", files[fi].name, " \xB7 \u0434\u0430\u0442: ", s.columns.length, " \xB7 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435: ", s.students.length), rep && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginLeft: 26,
+        fontSize: 13,
+        lineHeight: 1.5
+      }
+    }, "\u041D\u0430\u0439\u0434\u0435\u043D\u043E \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u044B: ", /*#__PURE__*/React.createElement("b", null, rep.matched), " \u0438\u0437 ", rep.studentsTotal, " \xB7 \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043E\u0442\u043C\u0435\u0442\u043E\u043A: ", /*#__PURE__*/React.createElement("b", null, rep.addCount), ", \xAB\u041D\xBB: ", /*#__PURE__*/React.createElement("b", null, rep.absCount), rep.surplusCount > 0 && /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: THEME.red
+      }
+    }, " \xB7 \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u0431\u043E\u043B\u044C\u0448\u0435, \u0447\u0435\u043C \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435: ", rep.surplusCount), rep.doubles > 0 && ` · в ячейке и оценка, и «Н» (взята оценка): ${rep.doubles}`, rep.skipped && /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: THEME.red
+      }
+    }, "\u041D\u0438 \u043E\u0434\u043D\u043E\u0433\u043E \u0443\u0447\u0435\u043D\u0438\u043A\u0430 \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u043B\u0438\u0441\u0442\u0430 \u043D\u0435\u0442 \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u044B (\u0434\u043B\u044F \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u043B\u0438\u0442\u0435\u0440\u044B) \u2014 \u043B\u0438\u0441\u0442 \u0431\u0443\u0434\u0435\u0442 \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D. \u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0434\u043E\u0431\u0430\u0432\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0421\u043F\u0438\u0441\u043A\u0438 \u043A\u043B\u0430\u0441\u0441\u043E\u0432\xBB."), rep.unmatched.length > 0 && rep.matched > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "#7a8a9c"
+      }
+    }, "\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B (\u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u043E\u0431\u0440\u0430\u0431\u043E\u0442\u0430\u043D\u044B): ", rep.unmatched.join(", ")), rep.bad.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: "#7a8a9c"
+      }
+    }, "\u041D\u0435\u043F\u043E\u043D\u044F\u0442\u043D\u044B\u0435 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0432 \u044F\u0447\u0435\u0439\u043A\u0430\u0445 \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u044B: ", rep.bad.slice(0, 5).join("; "), rep.bad.length > 5 ? "…" : "")));
+  })), sheetsFlat.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: "#7a8a9c"
+    }
+  }, "\u041F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u044B \u043B\u0438\u0441\u0442\u044B \u0441\u0430\u043C\u043E\u0433\u043E \u0447\u0430\u0441\u0442\u043E\u0433\u043E \u0443\u0447\u0438\u0442\u0435\u043B\u044F \u0432 \u0444\u0430\u0439\u043B\u0430\u0445 (\u044D\u0442\u043E \u0432\u0430\u0448\u0438 \u0433\u0440\u0443\u043F\u043F\u044B); \u043B\u0438\u0441\u0442\u044B \u0434\u0440\u0443\u0433\u0438\u0445 \u0443\u0447\u0438\u0442\u0435\u043B\u0435\u0439 \u043C\u043E\u0436\u043D\u043E \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0433\u0430\u043B\u043E\u0447\u043A\u043E\u0439. \u041F\u0435\u0440\u0435\u0434 \u0437\u0430\u043F\u0438\u0441\u044C\u044E \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0430 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442 \u043A\u043E\u043F\u0438\u044E \u043F\u0440\u043E\u0435\u043A\u0442\u0430."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "primary",
+    disabled: !chosen.length || totalAdd === 0 && totalSurplus === 0,
+    onClick: start
+  }, totalAdd === 0 && totalSurplus === 0 && chosen.length ? "Расхождений нет — добавлять нечего" : `Продолжить (добавить: ${totalAdd}${totalSurplus ? `, лишних в журнале: ${totalSurplus}` : ""})`))), step === "warn" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      lineHeight: 1.55
+    }
+  }, /*#__PURE__*/React.createElement("b", null, "\u0412\u043D\u0438\u043C\u0430\u043D\u0438\u0435!"), " \u0423 \u043D\u0435\u043A\u043E\u0442\u043E\u0440\u044B\u0445 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u043E\u0442\u043C\u0435\u0442\u043E\u043A \u0431\u043E\u043B\u044C\u0448\u0435, \u0447\u0435\u043C \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435. \u041D\u0438\u0436\u0435 \u044D\u0442\u0438 \u043E\u0442\u043C\u0435\u0442\u043A\u0438: \u043E\u0446\u0435\u043D\u043A\u0430, \u0434\u0430\u0442\u0430 \u0438 \u0432\u0438\u0434 \u0440\u0430\u0431\u043E\u0442\u044B (\u0435\u0441\u043B\u0438 \u0438\u0437\u0432\u0435\u0441\u0442\u0435\u043D). \u0414\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0439 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \xAB\u041E\u0441\u0442\u0430\u0432\u0438\u0442\u044C\xBB \u0438\u043B\u0438 \xAB\u0423\u0434\u0430\u043B\u0438\u0442\u044C\xBB. \u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u043E\u0442\u043C\u0435\u0442\u043A\u0438 \u0438\u0437 \u0442\u0430\u0431\u043B\u0438\u0446\u044B (", totalAdd, ") \u0431\u0443\u0434\u0443\u0442 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u044B \u0432 \u043B\u044E\u0431\u043E\u043C \u0441\u043B\u0443\u0447\u0430\u0435."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: () => setDecisions(d0 => Object.fromEntries(Object.keys(d0).map(k => [k, "keep"])))
+  }, "\u041E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0432\u0441\u0435"), /*#__PURE__*/React.createElement(Btn, {
+    kind: "danger",
+    small: true,
+    onClick: () => setDecisions(d0 => Object.fromEntries(Object.keys(d0).map(k => [k, "delete"])))
+  }, "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0432\u0441\u0435")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 10,
+      maxHeight: "50vh",
+      overflow: "auto"
+    }
+  }, plans.flatMap(rep => rep.people.filter(p => p.surplus.length)).map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.student.id,
+    style: {
+      border: `1px solid ${THEME.border}`,
+      borderRadius: 10,
+      padding: "10px 12px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "\u0412\u043D\u0438\u043C\u0430\u043D\u0438\u0435! \u0423 \u0443\u0447\u0435\u043D\u0438\u043A\u0430 ", p.student.name, " \u0432 \u0436\u0443\u0440\u043D\u0430\u043B\u0435 \u043E\u0442\u043C\u0435\u0442\u043E\u043A \u0431\u043E\u043B\u044C\u0448\u0435"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 6
+    }
+  }, p.surplus.map(s => {
+    const work = describeMarkWork(data, s.mark);
+    return /*#__PURE__*/React.createElement("div", {
+      key: s.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        flex: 1,
+        minWidth: 200
+      }
+    }, "(", s.value, ", ", formatDateRu(s.date), work ? `, ${work}` : "", ")"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        padding: "5px 12px",
+        borderRadius: 8,
+        cursor: "pointer",
+        fontWeight: 700,
+        fontSize: 12.5,
+        border: `1.5px solid ${decisions[s.id] === "keep" ? THEME.bgDark : THEME.border}`,
+        background: decisions[s.id] === "keep" ? THEME.pastel : "#fff"
+      },
+      onClick: () => setDecisions(d0 => ({
+        ...d0,
+        [s.id]: "keep"
+      }))
+    }, "\u041E\u0441\u0442\u0430\u0432\u0438\u0442\u044C"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        padding: "5px 12px",
+        borderRadius: 8,
+        cursor: "pointer",
+        fontWeight: 700,
+        fontSize: 12.5,
+        color: decisions[s.id] === "delete" ? "#fff" : THEME.red,
+        border: `1.5px solid ${THEME.red}`,
+        background: decisions[s.id] === "delete" ? THEME.red : "#fff"
+      },
+      onClick: () => setDecisions(d0 => ({
+        ...d0,
+        [s.id]: "delete"
+      }))
+    }, "\u0423\u0434\u0430\u043B\u0438\u0442\u044C"));
+  }))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    onClick: () => setStep("pick"),
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    }
+  }, "\u2190 \u041D\u0430\u0437\u0430\u0434"), /*#__PURE__*/React.createElement(Btn, {
+    kind: "primary",
+    onClick: applyWithDecisions
+  }, "\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C (\u0443\u0434\u0430\u043B\u0438\u0442\u044C: ", Object.values(decisions).filter(v => v === "delete").length, ")"))), step === "done" && result && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 8,
+      fontSize: 13.5,
+      lineHeight: 1.55
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "\u0413\u043E\u0442\u043E\u0432\u043E."), " \u0414\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u043E \u043E\u0442\u043C\u0435\u0442\u043E\u043A: ", result.added, ", \xAB\u041D\xBB: ", result.absAdded, ". \u0423\u0434\u0430\u043B\u0435\u043D\u043E \u043B\u0438\u0448\u043D\u0438\u0445: ", result.deleted, ". \u0421\u043E\u0437\u0434\u0430\u043D\u043E \u0443\u0440\u043E\u043A\u043E\u0432: ", result.lessonsCreated, "."), result.lessonsCreated > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#7a8a9c"
+    }
+  }, "\u0421\u043E\u0437\u0434\u0430\u043D\u043D\u044B\u0435 \u0443\u0440\u043E\u043A\u0438 \u043F\u0443\u0441\u0442\u044B\u0435 (\u0431\u0435\u0437 \u0442\u0435\u043C\u044B) \u0438 \u043F\u043E\u043C\u0435\u0447\u0435\u043D\u044B \xAB\u0422\u0440\u0435\u0431\u0443\u0435\u0442 \u0434\u043E\u0440\u0430\u0431\u043E\u0442\u043A\u0438\xBB: \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0438\u0445 \u0438 \u0437\u0430\u043F\u043E\u043B\u043D\u0438\u0442\u0435."), result.blocked.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: THEME.red
+    }
+  }, "\u041D\u0435 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D\u043E (", result.blocked.length, "):", /*#__PURE__*/React.createElement("ul", {
+    style: {
+      margin: "4px 0 0 18px"
+    }
+  }, result.blocked.slice(0, 20).map((b, i) => /*#__PURE__*/React.createElement("li", {
+    key: i
+  }, b)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#7a8a9c"
+    }
+  }, "\u041F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u0439 \u0437\u0430\u043F\u0443\u0441\u043A \u0441 \u0442\u0435\u043C\u0438 \u0436\u0435 \u0444\u0430\u0439\u043B\u0430\u043C\u0438 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0434\u043E\u0431\u0430\u0432\u0438\u0442 \u2014 \u043A\u043E\u043B\u0438\u0447\u0435\u0441\u0442\u0432\u0430 \u0443\u0436\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u044E\u0442."))));
+}
+
 // Светло-серый фон для столбца даты, отмеченной как "отметки выставлены".
 const JOURNAL_MARKED_BG = "#e3e5e8";
 function JournalSection({
@@ -9538,7 +10648,7 @@ function JournalSection({
   const [addMarkOpen, setAddMarkOpen] = useState(false);
   const [bulkDate, setBulkDate] = useState(null);
   const [hoverCell, setHoverCell] = useState(null); // { studentId, date } — для перекрёстного выделения строки/столбца
-
+  const [xlsxOpen, setXlsxOpen] = useState(false);
   const effectiveKey = trackKey && tracks.some(t => trackKeyOf(t.kind, t.value) === trackKey) ? trackKey : tracks[0] ? trackKeyOf(tracks[0].kind, tracks[0].value) : null;
   useEffect(() => {
     if (trackKey !== effectiveKey) setTrackKey(effectiveKey);
@@ -9742,7 +10852,16 @@ function JournalSection({
     },
     disabled: students.length === 0,
     onClick: () => setAddMarkOpen(true)
-  }, "+ \u041E\u0442\u043C\u0435\u0442\u043A\u0430 \u0431\u0435\u0437 \u0443\u0440\u043E\u043A\u0430"), /*#__PURE__*/React.createElement("span", {
+  }, "+ \u041E\u0442\u043C\u0435\u0442\u043A\u0430 \u0431\u0435\u0437 \u0443\u0440\u043E\u043A\u0430"), kind === "class" && /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: () => setXlsxOpen(true),
+    title: "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043E\u0446\u0435\u043D\u043A\u0438 \u0438\u0437 \u0442\u0430\u0431\u043B\u0438\u0446\u044B Excel, \u0432\u044B\u0433\u0440\u0443\u0436\u0435\u043D\u043D\u043E\u0439 \u0438\u0437 \u0448\u043A\u043E\u043B\u044C\u043D\u043E\u0433\u043E \u044D\u043B\u0435\u043A\u0442\u0440\u043E\u043D\u043D\u043E\u0433\u043E \u0436\u0443\u0440\u043D\u0430\u043B\u0430"
+  }, "\uD83D\uDCE5 \u0418\u043C\u043F\u043E\u0440\u0442 \u0438\u0437 \u044D\u043B. \u0436\u0443\u0440\u043D\u0430\u043B\u0430 (.xlsx)"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 11,
       color: "#8593a3"
@@ -10020,7 +11139,11 @@ function JournalSection({
       },
       onClose: () => setCellModal(null)
     });
-  })(), reportModal && /*#__PURE__*/React.createElement(JournalReportModal, {
+  })(), xlsxOpen && /*#__PURE__*/React.createElement(JournalXlsxImportModal, {
+    data: data,
+    update: update,
+    onClose: () => setXlsxOpen(false)
+  }), reportModal && /*#__PURE__*/React.createElement(JournalReportModal, {
     mode: reportModal.mode,
     studentId: reportModal.studentId,
     date: reportModal.date,
@@ -10113,6 +11236,8 @@ function LessonPage({
   const [sendStudentId, setSendStudentId] = useState("");
   const [worksheetStudent, setWorksheetStudent] = useState(null);
   const [checklistOpen, setChecklistOpen] = useState(false);
+  const [printTarget, setPrintTarget] = useState(null); // {kind: "exercise"|"theory"|"homeworkText", id}
+
   const setLesson = patch => {
     update(d => {
       const l = d.lessons.find(x => x.id === lesson.id);
@@ -11265,6 +12390,13 @@ function LessonPage({
     onClick: () => setOpenNoteId(openNoteId === it.id ? null : it.id)
   }, "\uD83D\uDCDD"), /*#__PURE__*/React.createElement("span", {
     className: "lc-iconbtn",
+    title: "\u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u044D\u0442\u043E\u0442 \u044D\u043B\u0435\u043C\u0435\u043D\u0442 (\u043C\u043E\u0436\u043D\u043E \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u043F\u0438\u0439 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435)",
+    onClick: () => setPrintTarget({
+      kind: it.type,
+      id: obj.id
+    })
+  }, "\uD83D\uDDA8"), /*#__PURE__*/React.createElement("span", {
+    className: "lc-iconbtn",
     title: "\u0412\u044B\u0448\u0435",
     onClick: () => moveItem(idx, -1),
     style: idx === 0 ? {
@@ -11456,7 +12588,23 @@ function LessonPage({
     onChange: e => setLesson({
       homework: e.target.value
     })
-  })), /*#__PURE__*/React.createElement(Field, {
+  })), (lesson.homework || "").trim() && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: -6,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    kind: "ghost",
+    small: true,
+    style: {
+      color: "#12233a",
+      border: "1.5px solid #cfe3f2"
+    },
+    onClick: () => setPrintTarget({
+      kind: "homeworkText",
+      id: lesson.id
+    })
+  }, "\uD83D\uDDA8 \u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0442\u0435\u043A\u0441\u0442 \u0414\u0417")), /*#__PURE__*/React.createElement(Field, {
     label: "\u0424\u0430\u0439\u043B\u044B \u0438 \u0444\u043E\u0442\u043E \u043A \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C\u0443 \u0437\u0430\u0434\u0430\u043D\u0438\u044E"
   }, /*#__PURE__*/React.createElement("input", {
     ref: homeworkFileRef,
@@ -11595,6 +12743,13 @@ function LessonPage({
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("span", {
+    className: "lc-iconbtn",
+    title: "\u041F\u0435\u0447\u0430\u0442\u044C / \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u044D\u0442\u043E\u0442 \u044D\u043B\u0435\u043C\u0435\u043D\u0442 (\u043C\u043E\u0436\u043D\u043E \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043A\u043E\u043F\u0438\u0439 \u043D\u0430 \u043B\u0438\u0441\u0442\u0435)",
+    onClick: () => setPrintTarget({
+      kind: "exercise",
+      id: obj.id
+    })
+  }, "\uD83D\uDDA8"), /*#__PURE__*/React.createElement("span", {
     className: "lc-iconbtn",
     title: "\u0412\u044B\u0448\u0435",
     onClick: () => moveHomeworkItem(idx, -1),
@@ -11807,6 +12962,11 @@ function LessonPage({
     checklist: data.worksheetChecklist,
     update: update,
     onClose: () => setChecklistOpen(false)
+  }), printTarget && /*#__PURE__*/React.createElement(PrintElementModal, {
+    data: data,
+    lesson: lesson,
+    target: printTarget,
+    onClose: () => setPrintTarget(null)
   }));
 }
 function TheoryViewerModal({

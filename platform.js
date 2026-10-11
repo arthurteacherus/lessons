@@ -234,6 +234,12 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       await kvSet("shadow", text);
       return { ok: true };
     },
+    // копия проекта перед рискованной операцией (импорт оценок и т.п.) — одна на каждую метку
+    snapshot: async (label, text) => {
+      await ready;
+      await kvSet("snapshot-" + label, text);
+      return { ok: true };
+    },
     readShadowBackup: async () => {
       await ready;
       const text = await kvGet("shadow");
