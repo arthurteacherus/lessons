@@ -94,6 +94,24 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
     });
   };
 
+  const kvKeys = async () => {
+    const d = await db();
+    return new Promise((res, rej) => {
+      const r = d.transaction("kv").objectStore("kv").getAllKeys();
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  };
+  const kvDel = async (k) => {
+    const d = await db();
+    return new Promise((res, rej) => {
+      const tx = d.transaction("kv", "readwrite");
+      tx.objectStore("kv").delete(k);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  };
+
   // ---------- состояние синхронизации (аналог settings.json на ноутбуке) ----------
   let syncSt = {};
   const saveSync = async (patch) => {
@@ -240,6 +258,48 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       await kvSet("snapshot-" + label, text);
       return { ok: true };
     },
+    // ежедневные автокопии (последние 14) — в хранилище программы
+    dailyBackup: async () => {
+      try {
+        await ready;
+        const text = await kvGet("project");
+        if (!text) return { ok: false };
+        const d = new Date();
+        const p2 = (n) => String(n).padStart(2, "0");
+        const key = "daily-" + d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+        const keys = await kvKeys();
+        let created = false;
+        if (!keys.includes(key)) {
+          await kvSet(key, text);
+          created = true;
+          keys.push(key);
+        }
+        const daily = keys.filter((k) => String(k).startsWith("daily-")).sort();
+        while (daily.length > 14) await kvDel(daily.shift());
+        return { ok: true, created };
+      } catch (e) {
+        return { ok: false, error: errMsg(e) };
+      }
+    },
+    listBackups: async () => {
+      try {
+        await ready;
+        const keys = (await kvKeys()).filter((k) => String(k).startsWith("daily-")).sort().reverse();
+        const items = [];
+        for (const k of keys) {
+          const text = await kvGet(k);
+          items.push({ id: k, date: k.slice(6).split("-").reverse().join("."), size: text ? text.length : 0 });
+        }
+        return { ok: true, items, where: "хранилище программы на этом устройстве" };
+      } catch (e) {
+        return { ok: false, error: errMsg(e) };
+      }
+    },
+    readBackup: async (_path, id) => {
+      await ready;
+      const text = await kvGet(id);
+      return text ? { ok: true, text } : { ok: false, error: "копия не найдена" };
+    },
     readShadowBackup: async () => {
       await ready;
       const text = await kvGet("shadow");
@@ -264,6 +324,21 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       downloadBlob(file, fileName);
       alert("Системное «Поделиться» для этого файла недоступно — файл сохранён в «Загрузки» (Downloads). Отправьте его ученику оттуда.");
       return { ok: true, fileName };
+    },
+    // «Отправить урок»: системное меню «Поделиться» (там выбирается мессенджер и файл уходит сразу)
+    shareDocument: async ({ fileName, html, text }) => {
+      const file = new File(["﻿" + html], fileName, { type: "application/msword" });
+      try {
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: fileName.replace(/\.doc$/, ""), text });
+          return { ok: true, path: fileName };
+        }
+      } catch (e) {
+        if (e && e.name === "AbortError") return { ok: false, cancelled: true };
+      }
+      downloadBlob(file, fileName);
+      alert("Системное «Поделиться» для файла недоступно — файл сохранён в «Загрузки» (Downloads). Отправьте его в мессенджер оттуда.");
+      return { ok: true, path: "Загрузки" };
     },
     listExchangeAnswers: async () => ({ ok: true, files: [] }),
     markExchangeReviewed: async () => ({ ok: true }),
@@ -390,7 +465,10 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
 
   // Имя файла на Диске поменялось (lessons.json → lessons.js): старые отпечатки больше не годятся.
   async function ensureRemoteName() {
-    if (syncSt.remoteName !== YD_REMOTE) await saveSync({ remoteName: YD_REMOTE, lastRemoteMd5: null, lastLocalHash: null });
+    if (syncSt.remoteName !== YD_REMOTE) {
+      await saveSync({ remoteName: YD_REMOTE, lastRemoteMd5: null, lastLocalHash: null });
+      await kvDel("sync-base");
+    }
   }
 
   async function pushText(localText, force) {
@@ -421,6 +499,7 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       }
       await sleep(700);
     }
+    await kvSet("sync-base", localText);
     await saveSync({ lastRemoteMd5: md5, lastLocalHash: localHash, lastSyncAt: Date.now() });
     return { ok: true, status: "pushed", lastSyncAt: syncSt.lastSyncAt };
   }
@@ -443,6 +522,7 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
     syncDisconnect: async () => {
       await ready;
       await saveSync({ token: null, lastRemoteMd5: null, lastLocalHash: null });
+      await kvDel("sync-base");
       return { ok: true };
     },
     syncSetToken: async (token) => {
@@ -482,8 +562,20 @@ if (typeof module !== "undefined") module.exports = { lcMd5Hex };
       if (remoteMd5 && md5Of(wrap(localText)) === remoteMd5) return false;
       return true;
     },
+    syncGetBase: async () => {
+      await ready;
+      const text = await kvGet("sync-base");
+      return { ok: true, text: text || null };
+    },
+    syncAcceptRemote: async (remoteMd5, remoteText) => {
+      await ready;
+      await kvSet("sync-base", remoteText);
+      await saveSync({ lastRemoteMd5: remoteMd5, lastLocalHash: null });
+      return { ok: true };
+    },
     syncMarkSynced: async (remoteMd5, localText) => {
       await ready;
+      await kvSet("sync-base", localText);
       await saveSync({ lastRemoteMd5: remoteMd5, lastLocalHash: await sha256Of(localText), lastSyncAt: Date.now() });
       return { ok: true, lastSyncAt: syncSt.lastSyncAt };
     },
